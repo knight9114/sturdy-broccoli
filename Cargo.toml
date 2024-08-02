@@ -1,0 +1,16 @@
+[package]
+name = "nlp"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+wgpu = ["burn/wgpu"]
+candle = ["burn/candle"]
+ndarray = ["burn/ndarray"]
+
+[dependencies]
+burn = { version = "0.13.2", features = ["train"] }
+tokenizers = "0.19.1"
+
+[dev-dependencies]
+burn = { version = "0.13.2", features = ["ndarray"] }
