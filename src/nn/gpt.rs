@@ -117,9 +117,14 @@ impl<B: Backend> GptBlock<B> {
     pub fn forward(
         &self,
         x: Tensor<B, 3>,
-        mask: Option<Tensor<B, 2, Bool>>,
+        attention_mask: Option<Tensor<B, 3, Bool>>,
+        padding_mask: Option<Tensor<B, 2, Bool>>,
     ) -> (Tensor<B, 3>, Tensor<B, 4>) {
-        let (y, attn) = self.mha.forward(self.mha_norm.forward(x.clone()), mask);
+        let (y, attn) = self.mha.forward(
+            self.mha_norm.forward(x.clone()),
+            attention_mask,
+            padding_mask,
+        );
         let x = x + self.mha_dropout.forward(y);
         let y = self.mlp.forward(self.mlp_norm.forward(x.clone()));
         (x + self.mlp_dropout.forward(y), attn)
@@ -129,6 +134,7 @@ impl<B: Backend> GptBlock<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use burn::nn::attention::generate_autoregressive_mask;
     use burn::tensor::Distribution;
     type TestBackend = burn::backend::NdArray;
 
@@ -137,7 +143,7 @@ mod tests {
         let device = Default::default();
         let module = GptBlockConfig::new(64, 4, 128).init::<TestBackend>(&device);
         let x = Tensor::random([8, 13, 64], Distribution::Normal(0., 1.), &device);
-        let (y, attn) = module.forward(x, None);
+        let (y, attn) = module.forward(x, None, None);
 
         assert_eq!(y.dims(), [8, 13, 64]);
         assert_eq!(attn.dims(), [8, 4, 13, 13]);
@@ -148,8 +154,9 @@ mod tests {
         let device = Default::default();
         let module = GptBlockConfig::new(64, 4, 128).init::<TestBackend>(&device);
         let x = Tensor::random([8, 13, 64], Distribution::Normal(0., 1.), &device);
-        let mask = Tensor::triu_mask([13, 13], 1, &device);
-        let (y, attn) = module.forward(x, Some(mask));
+        let padding_mask = None;
+        let attention_mask = Some(generate_autoregressive_mask(8, 13, &device));
+        let (y, attn) = module.forward(x, attention_mask, padding_mask);
 
         assert_eq!(y.dims(), [8, 13, 64]);
         assert_eq!(attn.dims(), [8, 4, 13, 13]);

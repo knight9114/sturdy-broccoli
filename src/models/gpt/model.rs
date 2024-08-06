@@ -2,7 +2,10 @@ use crate::nn::{GptBlock, GptBlockConfig, LayerNorm, LayerNormConfig};
 use burn::{
     config::Config,
     module::Module,
-    nn::{Dropout, DropoutConfig, Embedding, EmbeddingConfig, Initializer, Linear, LinearConfig},
+    nn::{
+        attention::generate_autoregressive_mask, Dropout, DropoutConfig, Embedding,
+        EmbeddingConfig, Initializer, Linear, LinearConfig,
+    },
     tensor::{backend::Backend, Bool, Int, Tensor},
 };
 
@@ -210,20 +213,22 @@ impl<B: Backend> GptCore<B> {
     pub fn forward(
         &self,
         input: Tensor<B, 2, Int>,
-        mask: Option<Tensor<B, 2, Bool>>,
+        attention_mask: Option<Tensor<B, 3, Bool>>,
+        padding_mask: Option<Tensor<B, 2, Bool>>,
     ) -> (Tensor<B, 3>, Vec<Tensor<B, 4>>) {
         let device = self.devices()[0].clone();
-        let [_, t] = input.dims();
+        let [b, t] = input.dims();
         let mut attns = Vec::with_capacity(self.blocks.len());
 
         let pos = Tensor::arange(0..t as i64, &device).unsqueeze::<2>();
         let t_emb = self.position_embedding.forward(pos);
         let s_emb = self.token_embedding.forward(input);
 
-        let mask = mask.or_else(|| Some(Tensor::triu_mask([t, t], 1, &device)));
+        let attention_mask =
+            attention_mask.or_else(|| Some(generate_autoregressive_mask(b, t, &device)));
         let mut x = self.dropout.forward(s_emb + t_emb);
         for block in self.blocks.iter() {
-            let (y, attn) = block.forward(x, mask.clone());
+            let (y, attn) = block.forward(x, attention_mask.clone(), padding_mask.clone());
             x = y;
             attns.push(attn)
         }
@@ -243,9 +248,10 @@ impl<B: Backend> Gpt<B> {
     pub fn forward(
         &self,
         input: Tensor<B, 2, Int>,
-        mask: Option<Tensor<B, 2, Bool>>,
+        attention_mask: Option<Tensor<B, 3, Bool>>,
+        padding_mask: Option<Tensor<B, 2, Bool>>,
     ) -> (Tensor<B, 3>, Vec<Tensor<B, 4>>) {
-        let (x, attns) = self.core.forward(input, mask);
+        let (x, attns) = self.core.forward(input, attention_mask, padding_mask);
         (self.lm_head.forward(x), attns)
     }
 }
@@ -265,7 +271,7 @@ mod tests {
             Distribution::Uniform(0., 50304.),
             &device,
         );
-        let (y, attns) = module.forward(x.int(), None);
+        let (y, attns) = module.forward(x.int(), None, None);
 
         assert_eq!(y.dims(), [8, 13, 50304]);
         assert_eq!(module.core.blocks.len(), attns.len());

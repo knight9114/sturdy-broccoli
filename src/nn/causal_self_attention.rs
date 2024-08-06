@@ -78,7 +78,8 @@ impl<B: Backend> CausalSelfAttention<B> {
     pub fn forward(
         &self,
         x: Tensor<B, 3>,
-        mask: Option<Tensor<B, 2, Bool>>,
+        attention_mask: Option<Tensor<B, 3, Bool>>,
+        padding_mask: Option<Tensor<B, 2, Bool>>,
     ) -> (Tensor<B, 3>, Tensor<B, 4>) {
         let qkv = self.qkv.forward(x);
         let [q, k, v] = qkv
@@ -91,8 +92,11 @@ impl<B: Backend> CausalSelfAttention<B> {
         let v = self.split_heads(v);
 
         let mut attn = q.matmul(k.transpose()) / (self.d_head as f64).sqrt();
-        if let Some(mask) = mask {
-            attn = attn.mask_fill(mask.unsqueeze::<4>(), self.mask_value);
+        if let Some(mask) = padding_mask {
+            attn = attn.mask_fill(mask.unsqueeze_dims(&[1, 2]), self.mask_value);
+        }
+        if let Some(mask) = attention_mask {
+            attn = attn.mask_fill(mask.unsqueeze_dim(1), self.mask_value);
         }
         let attn = match self.quiet_softmax {
             true => activation::quiet_softmax(attn, 3),
@@ -120,6 +124,7 @@ impl<B: Backend> CausalSelfAttention<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use burn::nn::attention::generate_autoregressive_mask;
     use burn::tensor::Distribution;
     type TestBackend = burn::backend::NdArray;
 
@@ -128,7 +133,7 @@ mod tests {
         let device = Default::default();
         let module = CausalSelfAttentionConfig::new(64, 4).init::<TestBackend>(&device);
         let x = Tensor::random([8, 13, 64], Distribution::Normal(0., 1.), &device);
-        let (y, attn) = module.forward(x, None);
+        let (y, attn) = module.forward(x, None, None);
 
         assert_eq!(y.dims(), [8, 13, 64]);
         assert_eq!(attn.dims(), [8, 4, 13, 13]);
@@ -139,8 +144,8 @@ mod tests {
         let device = Default::default();
         let module = CausalSelfAttentionConfig::new(64, 4).init::<TestBackend>(&device);
         let x = Tensor::random([8, 13, 64], Distribution::Normal(0., 1.), &device);
-        let mask = Tensor::triu_mask([13, 13], 1, &device);
-        let (y, attn) = module.forward(x, Some(mask));
+        let attention_mask = Some(generate_autoregressive_mask(8, 13, &device));
+        let (y, attn) = module.forward(x, attention_mask, None);
 
         assert_eq!(y.dims(), [8, 13, 64]);
         assert_eq!(attn.dims(), [8, 4, 13, 13]);
