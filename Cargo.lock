@@ -1970,6 +1970,8 @@ dependencies = [
  "anyhow",
  "burn",
  "clap",
+ "derive-new",
+ "serde",
  "tokenizers",
 ]
 

@@ -2,11 +2,15 @@ use clap::Command;
 
 fn main() -> anyhow::Result<()> {
     let cmd = build_cli();
-    let _matches = cmd.get_matches();
-    Ok(())
+    let matches = cmd.get_matches();
+    match matches.subcommand() {
+        Some(("gpt", _matches)) => todo!(),
+        Some(("llama", _matches)) => todo!(),
+        _ => unreachable!("oops"),
+    }
 }
 
-fn build_cli() -> clap::Command {
+fn build_cli() -> Command {
     let cmd = Command::new("nlp")
         .bin_name("nlp")
         .subcommand_required(true);
@@ -15,12 +19,12 @@ fn build_cli() -> clap::Command {
     cmd
 }
 
-fn build_gpt(cmd: Command) -> clap::Command {
+fn build_gpt(cmd: Command) -> Command {
     let gpt = Command::new("gpt");
     cmd.subcommand(gpt)
 }
 
-fn build_llama(cmd: clap::Command) -> clap::Command {
+fn build_llama(cmd: clap::Command) -> Command {
     let llama = Command::new("llama");
     cmd.subcommand(llama)
 }
