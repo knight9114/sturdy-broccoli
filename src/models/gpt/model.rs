@@ -1,17 +1,25 @@
-use crate::nn::{GptBlock, GptBlockConfig, LayerNorm, LayerNormConfig};
+use crate::{
+    nn::{GptBlock, GptBlockConfig, LayerNorm, LayerNormConfig},
+    utils::data::TrainBatchForCausalLM,
+};
 use burn::{
     config::Config,
     module::Module,
     nn::{
-        attention::generate_autoregressive_mask, Dropout, DropoutConfig, Embedding,
-        EmbeddingConfig, Initializer, Linear, LinearConfig,
+        attention::generate_autoregressive_mask, loss::CrossEntropyLossConfig, Dropout,
+        DropoutConfig, Embedding, EmbeddingConfig, Initializer, Linear, LinearConfig,
     },
-    tensor::{backend::Backend, Bool, Int, Tensor},
+    tensor::{
+        backend::{AutodiffBackend, Backend},
+        Bool, Int, Tensor,
+    },
+    train::{ClassificationOutput, TrainOutput, TrainStep, ValidStep},
 };
 
 #[derive(Config, Debug)]
 pub struct GptConfig {
     pub vocab_size: usize,
+    pub padding_index: usize,
 
     #[config(default = 12)]
     pub n_layers: usize,
@@ -109,6 +117,7 @@ impl GptConfig {
             lm_head: LinearConfig::new(config.d_model, config.vocab_size)
                 .with_bias(false)
                 .init(device),
+            padding_index: self.padding_index,
         }
     }
 
@@ -159,7 +168,7 @@ impl GptConfig {
 
 impl Default for GptConfig {
     fn default() -> Self {
-        let config = Self::new(50304);
+        let config = Self::new(50304, 50256);
         let scale = config.projection_scale / (2. * config.n_layers as f64).sqrt();
         let init = Initializer::Normal {
             mean: 0.,
@@ -242,6 +251,7 @@ impl<B: Backend> GptCore<B> {
 pub struct Gpt<B: Backend> {
     core: GptCore<B>,
     lm_head: Linear<B>,
+    padding_index: usize,
 }
 
 impl<B: Backend> Gpt<B> {
@@ -253,6 +263,58 @@ impl<B: Backend> Gpt<B> {
     ) -> (Tensor<B, 3>, Vec<Tensor<B, 4>>) {
         let (x, attns) = self.core.forward(input, attention_mask, padding_mask);
         (self.lm_head.forward(x), attns)
+    }
+}
+
+impl<B: AutodiffBackend> TrainStep<TrainBatchForCausalLM<B>, ClassificationOutput<B>> for Gpt<B> {
+    fn step(&self, item: TrainBatchForCausalLM<B>) -> TrainOutput<ClassificationOutput<B>> {
+        let (logits, _) = self.forward(
+            item.prefixes,
+            Some(item.attention_mask),
+            Some(item.padding_mask),
+        );
+        let [b, t, vs] = logits.dims();
+        let logits_flat = logits.reshape([b * t, vs]);
+        let suffixes_flat = item.suffixes.reshape([b * t]);
+
+        let loss = CrossEntropyLossConfig::new()
+            .with_pad_tokens(Some(vec![self.padding_index]))
+            .init(&logits_flat.device())
+            .forward(logits_flat.clone(), suffixes_flat.clone());
+
+        let output = ClassificationOutput {
+            loss,
+            output: logits_flat,
+            targets: suffixes_flat,
+        };
+
+        let grads = output.loss.backward();
+
+        TrainOutput::new(self, grads, output)
+    }
+}
+
+impl<B: Backend> ValidStep<TrainBatchForCausalLM<B>, ClassificationOutput<B>> for Gpt<B> {
+    fn step(&self, item: TrainBatchForCausalLM<B>) -> ClassificationOutput<B> {
+        let (logits, _) = self.forward(
+            item.prefixes,
+            Some(item.attention_mask),
+            Some(item.padding_mask),
+        );
+        let [b, t, vs] = logits.dims();
+        let logits_flat = logits.reshape([b * t, vs]);
+        let suffixes_flat = item.suffixes.reshape([b * t]);
+
+        let loss = CrossEntropyLossConfig::new()
+            .with_pad_tokens(Some(vec![self.padding_index]))
+            .init(&logits_flat.device())
+            .forward(logits_flat.clone(), suffixes_flat.clone());
+
+        ClassificationOutput {
+            loss,
+            output: logits_flat,
+            targets: suffixes_flat,
+        }
     }
 }
 
